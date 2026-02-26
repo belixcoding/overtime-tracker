@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Overtime Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+
+  <script type="module">
+    import { initializeApp }    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, getDocs, doc,
+             updateDoc, deleteDoc, query, orderBy,
+             onSnapshot, serverTimestamp, writeBatch }
+                                from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, signInWithEmailAndPassword, signOut,
+             onAuthStateChanged, createUserWithEmailAndPassword }
+                                from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+    // ═══════════════════════════════════════════════════════
+    // CONFIG
+    // ═══════════════════════════════════════════════════════
+    const firebaseConfig = {
+      apiKey:"AIzaSyD4Jq4HqmHXhv8gtJi-ND8iSh_H8vHueZM",
+      authDomain:"external-overtime.firebaseapp.com",
+      projectId:"external-overtime",
+      storageBucket:"external-overtime.firebasestorage.app",
+      messagingSenderId:"690868059967",
+      appId:"1:690868059967:web:926e615bd3a5d040cf5d8a"
+    };
+    const fb   = initializeApp(firebaseConfig);
+    const db   = getFirestore(fb);
+    const auth = getAuth(fb);
+
+    // ═══════════════════════════════════════════════════════
+    // USER DEFINITIONS
+    // Roller: "superadmin" | "approver" | "user"
+    // approverEmail: kimin onaylayıcısı olduğu
+    // ═══════════════════════════════════════════════════════
+    const USER_DEFINITIONS = [
+      // ── SUPER ADMIN ──────────────────────────────────────
+      { email:"ali_berkay_ozkan_external@bat.com",  name:"Ali Berkay Özkan (Ext)", role:"superadmin", color:"gold",   approverEmail:null },
+      // ── APPROVERS ────────────────────────────────────────
+      { email:"tamer_kabakcioglu@bat.com",          name:"Tamer Kabakçıoğlu",      role:"approver",   color:"sky",    approverEmail:null },
+      { email:"ali_berkay_ozkan@bat.com",           name:"Ali Berkay Özkan",       role:"approver",   color:"purple", approverEmail:null },
+      { email:"edanur_karapicak_ates@bat.com",      name:"Edanur Karapıçak Ateş",  role:"approver",   color:"rose",   approverEmail:null },
+      // ── USERS under tamer_kabakcioglu ────────────────────
+      { email:"mustafa_sayim_external@bat.com",     name:"Mustafa Sayım",          role:"user",       color:"amber",  approverEmail:"tamer_kabakcioglu@bat.com" },
+      { email:"muslum_pehlivan@bat.com",            name:"Müslüm Pehlivan",        role:"user",       color:"teal",   approverEmail:"tamer_kabakcioglu@bat.com" },
+      // ── USERS under ali_berkay_ozkan ─────────────────────
+      { email:"yasin_koknal_external@bat.com",      name:"Yasin Köknallar",        role:"user",       color:"lime",   approverEmail:"ali_berkay_ozkan@bat.com" },
+      { email:"emrah_menek_external@bat.com",       name:"Emrah Menek",            role:"user",       color:"orange", approverEmail:"ali_berkay_ozkan@bat.com" },
+      { email:"sude_albayrak_external@bat.com",     name:"Sude Albayrak",          role:"user",       color:"amber",  approverEmail:"ali_berkay_ozkan@bat.com" },
+      // ── USERS under edanur ───────────────────────────────
+      { email:"elif_caliskan_external@bat.com",     name:"Elif Çalışkan",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
+      { email:"deniz_soydas_external@bat.com",      name:"Deniz Soybaş",           role:"user",       color:"teal",   approverEmail:"edanur_karapicak_ates@bat.com" },
+    ];
+    // superadmin kendi kendinin de onaylayıcısı (onaylayıcı listesinde kendisini görür)
+    // ali_berkay_ozkan_external kendi kendinin de approver'ı
+    USER_DEFINITIONS.find(u=>u.email==="ali_berkay_ozkan_external@bat.com").approverEmail = "ali_berkay_ozkan@bat.com";
+
+    const SUPER_ADMIN_EMAIL = "ali_berkay_ozkan_external@bat.com";
+
+    // ═══════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════
+    let authUser    = null;
+    let currentUser = null;   // Firestore user doc
+    let allUsers    = [];
+    let overtime    = [];
+    let offUsage    = [];
+    let unsubOT=null, unsubOff=null, unsubUsers=null;
+    let page        = "dashboard";
+    let tab         = "pending";
+    let fuFilter    = "all";
+    let fsFilter    = "all";
+
+    // ═══════════════════════════════════════════════════════
+    // HELPERS
+    // ═══════════════════════════════════════════════════════
+    const fmt = d => {
+      if (!d) return "-";
+      const dt = d.toDate ? d.toDate() : new Date(d);
+      return dt.toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit",year:"numeric"});
+    };
+    const ini = n => n?.split(" ").map(x=>x[0]).join("").toUpperCase().slice(0,2)||"??";
+
+    const toast = (msg,type="success") => {
+      const t=document.getElementById("toast");
+      t.textContent=msg; t.className=`toast t-${type} show`;
+      setTimeout(()=>t.className="toast",3500);
+    };
+
+    const csv = (rows,fn) => {
+      if(!rows.length) return;
+      const h=Object.keys(rows[0]);
+      const data=[h,...rows.map(r=>h.map(k=>`"${String(r[k]??"").replace(/"/g,'""')}"`))]
+        .map(r=>r.join(",")).join("\n");
+      const a=document.createElement("a");
+      a.href="data:text/csv;charset=utf-8,\uFEFF"+encodeURIComponent(data);
+      a.download=fn+".csv"; a.click();
+    };
+
+    const isSuperAdmin = () => currentUser?.email === SUPER_ADMIN_EMAIL;
+    const isApprover   = () => ["approver","superadmin"].includes(currentUser?.role);
+
+    // Hangi user'ları görebilir / onaylayabilir?
+    const myManagedUsers = () => {
+      if (isSuperAdmin()) return allUsers.filter(u=>u.role==="user");
+      if (currentUser?.role==="approver")
+        return allUsers.filter(u=>u.approverEmail===currentUser.email);
+      return [];
+    };
+
+    const balance = uid => {
+      const earned = overtime.filter(o=>o.userId===uid&&o.status==="approved").reduce((s,o)=>s+(o.offHours||0),0);
+      const used   = offUsage.filter(o=>o.userId===uid).reduce((s,o)=>s+(o.hours||0),0);
+      return {earned,used,balance:earned-used};
+    };
+
+    const stag = o => {
+      if(o.status==="pending")  return `<span class="tag t-pend">⏳ Bekliyor</span>`;
+      if(o.status==="approved") return `<span class="tag t-appr">✓ Onaylandı</span>`;
+      return `<span class="tag t-rej">✗ Reddedildi</span>`;
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // SEED — İlk açılışta kullanıcıları Firestore'a yaz
+    // ═══════════════════════════════════════════════════════
+    async function seedUsers() {
+      const snap = await getDocs(collection(db,"users"));
+      const existing = snap.docs.map(d=>d.data().email);
+      const batch = writeBatch(db);
+      let added = 0;
+      for (const u of USER_DEFINITIONS) {
+        if (!existing.includes(u.email)) {
+          batch.set(doc(collection(db,"users")), u);
+          added++;
+        }
+      }
+      if (added>0) await batch.commit();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // FIRESTORE LISTENERS
+    // ═══════════════════════════════════════════════════════
+    function subscribeAll() {
+      if(unsubUsers) unsubUsers();
+      if(unsubOT)    unsubOT();
+      if(unsubOff)   unsubOff();
+
+      unsubUsers = onSnapshot(collection(db,"users"), snap=>{
+        allUsers = snap.docs.map(d=>({id:d.id,...d.data()}));
+        if(authUser) currentUser = allUsers.find(u=>u.email===authUser.email)||null;
+        render();
+      });
+      unsubOT = onSnapshot(query(collection(db,"overtime"),orderBy("date","desc")), snap=>{
+        overtime = snap.docs.map(d=>({id:d.id,...d.data()})); render();
+      });
+      unsubOff = onSnapshot(query(collection(db,"offUsage"),orderBy("date","desc")), snap=>{
+        offUsage = snap.docs.map(d=>({id:d.id,...d.data()})); render();
+      });
+    }
+    function unsubAll() { unsubUsers?.(); unsubOT?.(); unsubOff?.(); }
+
+    // ═══════════════════════════════════════════════════════
+    // AUTH
+    // ═══════════════════════════════════════════════════════
+    onAuthStateChanged(auth, async fbUser=>{
+      if(fbUser){
+        authUser = fbUser;
+        // 1) Önce seed çalıştır (eksik kullanıcıları Firestore'a yaz)
+        try { await seedUsers(); } catch(e){ console.warn("Seed error:", e); }
+        // 2) Kullanıcıyı Firestore'dan çek
+        const snap = await getDocs(collection(db,"users"));
+        allUsers = snap.docs.map(d=>({id:d.id,...d.data()}));
+        currentUser = allUsers.find(u=>u.email===fbUser.email)||null;
+        console.log("Auth email:", fbUser.email);
+        console.log("Found user:", currentUser);
+        console.log("All users in Firestore:", allUsers.map(u=>u.email));
+        if(!currentUser){
+          // Kullanıcı definitions'da var mı kontrol et, varsa ekle
+          const def = USER_DEFINITIONS.find(u=>u.email===fbUser.email);
+          if(def){
+            console.log("User in definitions but not Firestore, adding...");
+            await addDoc(collection(db,"users"), def);
+            const snap2 = await getDocs(collection(db,"users"));
+            allUsers = snap2.docs.map(d=>({id:d.id,...d.data()}));
+            currentUser = allUsers.find(u=>u.email===fbUser.email)||null;
+          }
+          if(!currentUser){
+            toast("Kullanıcı Firestore'da bulunamadı. Konsolu kontrol et.","error");
+            await signOut(auth); return;
+          }
+        }
+        subscribeAll();
+      } else {
+        authUser=null; currentUser=null; unsubAll(); render();
+      }
+    });
+
+    // ═══════════════════════════════════════════════════════
+    // RENDER ROOT
+    // ═══════════════════════════════════════════════════════
+    function render(){
+      if(!authUser||!currentUser){ renderLogin(); return; }
+      renderShell(); renderPage();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // LOGIN
+    // ═══════════════════════════════════════════════════════
+    function renderLogin(){
+      document.getElementById("root").innerHTML=`
+      <div class="login-screen">
+        <div class="login-card">
+          <div class="login-brand">
+            <div class="blogo"><span class="bo">over</span><span class="bt">time</span></div>
+            <p class="bsub">BAT Fazla Mesai Takip Sistemi</p>
+          </div>
+          <div class="lfields">
+            <div class="field">
+              <label>E-posta</label>
+              <input type="email" id="le" placeholder="ad@bat.com" autocomplete="email"
+                onkeydown="if(event.key==='Enter') document.getElementById('lp').focus()"/>
+            </div>
+            <div class="field" style="position:relative">
+              <label>Şifre</label>
+              <input type="password" id="lp" placeholder="••••••••" autocomplete="current-password"
+                onkeydown="if(event.key==='Enter') window._login()"/>
+              <button class="eye-btn" onclick="window._eye()" tabindex="-1">👁</button>
+            </div>
+            <div id="lerr" class="alert a-err hidden"></div>
+            <button class="btn b-pri b-full" id="lbtn" onclick="window._login()">Giriş Yap →</button>
+          </div>
+          <div style="text-align:center;margin-top:12px">
+            <button class="link-btn" onclick="window._forgotPw()">Şifremi unuttum</button>
+          </div>
+          <p class="lhint">Varsayılan şifre: <strong>password</strong></p>
+        </div>
+      </div>`;
+      setTimeout(()=>document.getElementById("le")?.focus(),80);
+    }
+
+    window._eye = ()=>{
+      const p=document.getElementById("lp"), b=document.querySelector(".eye-btn");
+      p.type = p.type==="password"?"text":"password";
+      b.textContent = p.type==="password"?"👁":"🙈";
+    };
+
+    window._login = async()=>{
+      const email=document.getElementById("le")?.value?.trim();
+      const pass =document.getElementById("lp")?.value;
+      const err  =document.getElementById("lerr");
+      const btn  =document.getElementById("lbtn");
+      if(!email||!pass){err.textContent="E-posta ve şifre zorunlu.";err.classList.remove("hidden");return;}
+      btn.disabled=true; btn.textContent="Giriş yapılıyor..."; err.classList.add("hidden");
+      try{ await signInWithEmailAndPassword(auth,email,pass); }
+      catch(e){
+        const m={"auth/user-not-found":"Bu e-posta kayıtlı değil.","auth/wrong-password":"Şifre hatalı.",
+          "auth/invalid-credential":"E-posta veya şifre hatalı.","auth/too-many-requests":"Çok fazla deneme. Bekleyin."};
+        err.textContent=m[e.code]||"Hata: "+e.message; err.classList.remove("hidden");
+        btn.disabled=false; btn.textContent="Giriş Yap →";
+      }
+    };
+
+    // Şifremi unuttum
+    window._forgotPw = async()=>{
+      const email=document.getElementById("le")?.value?.trim();
+      const err=document.getElementById("lerr");
+      if(!email){ err.textContent="Önce e-posta adresinizi girin."; err.classList.remove("hidden"); return; }
+      const { sendPasswordResetEmail } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+      try{
+        await sendPasswordResetEmail(auth, email);
+        err.style.cssText="background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.25);color:var(--grn)";
+        err.textContent="✓ Şifre sıfırlama e-postası gönderildi. Gelen kutunuzu kontrol edin.";
+        err.classList.remove("hidden");
+      }catch(ex){
+        err.style.cssText="";
+        const m={"auth/user-not-found":"Bu e-posta kayıtlı değil.","auth/invalid-email":"Geçersiz e-posta."};
+        err.textContent=m[ex.code]||"Hata: "+ex.message; err.classList.remove("hidden");
+      }
+    };
+
+    // Şifre değiştir
+    window._changePwModal = ()=>{
+      showModal("Şifre Değiştir",`
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="field"><label>Mevcut Şifre</label>
+            <input type="password" id="pw-old" placeholder="••••••••"/></div>
+          <div class="field"><label>Yeni Şifre</label>
+            <input type="password" id="pw-new" placeholder="En az 6 karakter"/></div>
+          <div class="field"><label>Yeni Şifre (Tekrar)</label>
+            <input type="password" id="pw-new2" placeholder="••••••••"/></div>
+          <div id="pw-err" class="alert a-err hidden"></div>
+        </div>`,
+        `<button class="btn b-sec" onclick="closeModal()">İptal</button>
+         <button class="btn b-pri" onclick="window._changePw()">Değiştir</button>`
+      );
+    };
+
+    window._changePw = async()=>{
+      const oldPw  = document.getElementById("pw-old")?.value;
+      const newPw  = document.getElementById("pw-new")?.value;
+      const newPw2 = document.getElementById("pw-new2")?.value;
+      const err    = document.getElementById("pw-err");
+      if(!oldPw||!newPw||!newPw2){err.textContent="Tüm alanlar zorunlu.";err.classList.remove("hidden");return;}
+      if(newPw!==newPw2){err.textContent="Yeni şifreler eşleşmiyor.";err.classList.remove("hidden");return;}
+      if(newPw.length<6){err.textContent="Şifre en az 6 karakter olmalı.";err.classList.remove("hidden");return;}
+      const { reauthenticateWithCredential, EmailAuthProvider, updatePassword } =
+        await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+      try{
+        const cred = EmailAuthProvider.credential(authUser.email, oldPw);
+        await reauthenticateWithCredential(authUser, cred);
+        await updatePassword(authUser, newPw);
+        toast("Şifre başarıyla değiştirildi ✓");
+        closeModal();
+      }catch(ex){
+        const m={"auth/wrong-password":"Mevcut şifre hatalı.","auth/invalid-credential":"Mevcut şifre hatalı."};
+        err.textContent=m[ex.code]||"Hata: "+ex.message; err.classList.remove("hidden");
+      }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // SHELL
+    // ═══════════════════════════════════════════════════════
+    function renderShell(){
+      const sa = isSuperAdmin();
+      const ap = isApprover();
+      const pendCount = (() => {
+        if(sa) return overtime.filter(o=>o.status==="pending").length;
+        if(ap) return overtime.filter(o=>o.status==="pending"&&myManagedUsers().some(u=>u.id===o.userId)).length;
+        return 0;
+      })();
+      const bal = !ap ? balance(currentUser.id) : null;
+
+      const navItems = sa ? [
+        {id:"dashboard",   icon:"◈", label:"Dashboard"},
+        {id:"approve",     icon:"✓", label:"Mesai Onayları", badge:pendCount||null},
+        {id:"team",        icon:"◎", label:"Ekip Bakiyeleri"},
+        {id:"all-ot",      icon:"≡", label:"Tüm Mesailer"},
+        {id:"users",       icon:"⚙", label:"Kullanıcı Yönetimi"},
+      ] : ap ? [
+        {id:"dashboard",   icon:"◈", label:"Dashboard"},
+        {id:"approve",     icon:"✓", label:"Mesai Onayları", badge:pendCount||null},
+        {id:"team",        icon:"◎", label:"Ekibim"},
+        {id:"all-ot",      icon:"≡", label:"Ekip Mesaileri"},
+      ] : [
+        {id:"dashboard",   icon:"◈", label:"Dashboard"},
+        {id:"add-ot",      icon:"+", label:"Mesai Ekle"},
+        {id:"my-ot",       icon:"≡", label:"Mesailerim"},
+        {id:"use-off",     icon:"◷", label:"Off Kullan"},
+      ];
+
+      document.getElementById("root").innerHTML=`
+      <div class="app">
+        <aside class="sidebar">
+          <div class="sid-brand">
+            <div class="blogo sm"><span class="bo">over</span><span class="bt">time</span></div>
+            <p class="bsub-sm">BAT Fazla Mesai</p>
+          </div>
+          <nav class="nav">
+            ${navItems.map(i=>`
+            <div class="nav-item ${page===i.id?"active":""}" onclick="window._nav('${i.id}')">
+              <span class="ni">${i.icon}</span><span>${i.label}</span>
+              ${i.badge?`<span class="badge">${i.badge}</span>`:""}
+            </div>`).join("")}
+          </nav>
+          ${!ap&&bal ? `
+          <div class="sid-bal">
+            <div class="bl">Mevcut Bakiye</div>
+            <div class="bv ${bal.balance<0?"neg":"pos"}">${bal.balance.toFixed(1)}s</div>
+            <div class="bs">Kazanılan: ${bal.earned.toFixed(1)}s</div>
+          </div>` : ""}
+          <div class="sid-user">
+            <div class="avatar av-${currentUser.color} av-sm">${ini(currentUser.name)}</div>
+            <div style="flex:1;min-width:0">
+              <div class="su-n">${currentUser.name}</div>
+              <div class="su-r">${sa?"👑 Süper Admin":ap?"🔑 Onaylayıcı":"Çalışan"}</div>
+            </div>
+            <button class="logout-btn" onclick="window._changePwModal()" title="Şifre Değiştir">🔑</button>
+            <button class="logout-btn" onclick="window._logout()" title="Çıkış">↩</button>
+          </div>
+        </aside>
+        <main class="main" id="mc"></main>
+      </div>`;
+    }
+
+    window._nav    = p => { page=p; render(); };
+    window._logout = async()=>{ await signOut(auth); page="dashboard"; };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE ROUTER
+    // ═══════════════════════════════════════════════════════
+    function renderPage(){
+      const el=document.getElementById("mc"); if(!el) return;
+      const sa=isSuperAdmin(), ap=isApprover();
+      if      (page==="dashboard")                    el.innerHTML = ap ? renderApDash() : renderUserDash();
+      else if (page==="add-ot"   && !ap)              el.innerHTML = renderAddOT();
+      else if (page==="my-ot"    && !ap)              el.innerHTML = renderMyOT();
+      else if (page==="use-off"  && !ap)              el.innerHTML = renderUseOff();
+      else if (page==="approve"  && ap)               el.innerHTML = renderApprove();
+      else if (page==="team"     && ap)               el.innerHTML = renderTeam();
+      else if (page==="all-ot"   && ap)               el.innerHTML = renderAllOT();
+      else if (page==="users"    && sa)               el.innerHTML = renderUsers();
+      attachListeners();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: USER DASHBOARD
+    // ═══════════════════════════════════════════════════════
+    function renderUserDash(){
+      const bal=balance(currentUser.id);
+      const mine=overtime.filter(o=>o.userId===currentUser.id);
+      const pend=mine.filter(o=>o.status==="pending").length;
+      const appOT=mine.filter(o=>o.status==="approved").reduce((s,o)=>s+o.overtimeHours,0);
+      const approver=allUsers.find(u=>u.email===currentUser.approverEmail);
+      return `
+      <div class="ph"><h2>Merhaba, ${currentUser.name.split(" ")[0]} 👋</h2><p>Fazla mesai ve off bakiyen</p></div>
+      <div class="sg">
+        <div class="st gold"><div class="sl">Toplam Mesai</div><div class="sv gold">${appOT.toFixed(1)}s</div><div class="ss">Onaylanan</div></div>
+        <div class="st green"><div class="sl">Kazanılan Off</div><div class="sv green">${bal.earned.toFixed(1)}s</div><div class="ss">1.5× hesaplı</div></div>
+        <div class="st teal"><div class="sl">Kullanılan Off</div><div class="sv teal">${bal.used.toFixed(1)}s</div><div class="ss">Toplam</div></div>
+        <div class="st ${bal.balance<0?"red":"green2"}">
+          <div class="sl">Mevcut Bakiye</div>
+          <div class="sv ${bal.balance<0?"red":"green"}">${bal.balance.toFixed(1)}s</div>
+          <div class="ss">${pend>0?pend+" mesai bekliyor":"Güncel"}</div>
+        </div>
+      </div>
+      ${approver?`<div class="alert a-info" style="margin-bottom:16px">👤 Onaylayıcın: <strong>${approver.name}</strong></div>`:""}
+      ${pend>0?`<div class="alert a-info">⏳ ${pend} adet mesai kaydın onay bekliyor.</div>`:""}
+      <div class="card" style="margin-top:16px">
+        <div class="ch"><h3>Son Mesailer</h3></div>
+        ${mine.length===0?`<div class="empty"><div class="ei">📋</div><p>Henüz mesai kaydın yok</p></div>`:`
+        <div class="tw"><table>
+          <thead><tr><th>Tarih</th><th>Mesai</th><th>Off Hakkı</th><th>Durum</th></tr></thead>
+          <tbody>${mine.slice(0,6).map(o=>`
+            <tr><td>${fmt(o.date)}</td><td><b>${o.overtimeHours}s</b></td>
+            <td class="ct-gold">${o.offHours}s</td><td>${stag(o)}</td></tr>`).join("")}
+          </tbody>
+        </table></div>`}
+      </div>`;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: APPROVER / SUPERADMIN DASHBOARD
+    // ═══════════════════════════════════════════════════════
+    function renderApDash(){
+      const sa=isSuperAdmin();
+      const managed=myManagedUsers();
+      const totalEarned=managed.reduce((s,u)=>s+balance(u.id).earned,0);
+      const totalUsed  =managed.reduce((s,u)=>s+balance(u.id).used,0);
+      const pend=overtime.filter(o=>o.status==="pending"&&(sa||managed.some(u=>u.id===o.userId))).length;
+      const totOT=overtime.filter(o=>o.status==="approved"&&(sa||managed.some(u=>u.id===o.userId))).reduce((s,o)=>s+o.overtimeHours,0);
+      return `
+      <div class="ph"><h2>${sa?"Süper Admin Dashboard":"Onaylayıcı Dashboard"}</h2><p>${sa?"Tüm ekip özeti":"Sorumlu olduğun çalışanlar"}</p></div>
+      <div class="sg">
+        <div class="st gold"><div class="sl">Toplam Mesai</div><div class="sv gold">${totOT.toFixed(1)}s</div><div class="ss">Onaylanan</div></div>
+        <div class="st green"><div class="sl">Kazanılan Off</div><div class="sv green">${totalEarned.toFixed(1)}s</div><div class="ss">Ekip toplam</div></div>
+        <div class="st teal"><div class="sl">Kullanılan Off</div><div class="sv teal">${totalUsed.toFixed(1)}s</div><div class="ss">Ekip toplam</div></div>
+        <div class="st red"><div class="sl">Onay Bekleyen</div><div class="sv red">${pend}</div><div class="ss">Mesai talebi</div></div>
+      </div>
+      <div class="card">
+        <div class="ch"><h3>Ekip Bakiyeleri</h3></div>
+        <div class="tw"><table>
+          <thead><tr><th>Çalışan</th><th>Onaylayıcı</th><th>Kazanılan</th><th>Kullanılan</th><th>Bakiye</th></tr></thead>
+          <tbody>${managed.map(u=>{
+            const b=balance(u.id);
+            const ap=allUsers.find(x=>x.email===u.approverEmail);
+            return `<tr>
+              <td><div class="fr"><div class="avatar av-${u.color} av-sm">${ini(u.name)}</div>${u.name}</div></td>
+              <td class="ct-muted">${ap?.name||"-"}</td>
+              <td class="ct-green">${b.earned.toFixed(1)}s</td>
+              <td class="ct-gold">${b.used.toFixed(1)}s</td>
+              <td class="${b.balance<0?"ct-red":""}" style="font-weight:700">${b.balance.toFixed(1)}s</td>
+            </tr>`;}).join("")}
+          </tbody>
+        </table></div>
+      </div>`;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: ADD OVERTIME
+    // ═══════════════════════════════════════════════════════
+    function renderAddOT(){
+      return `
+      <div class="ph"><h2>Mesai Ekle</h2><p>Yeni fazla mesai kaydı oluştur</p></div>
+      <div class="card fc">
+        <div class="fr2">
+          <div class="field"><label>Tarih</label>
+            <input type="date" id="od" max="${new Date().toISOString().split("T")[0]}"/></div>
+          <div class="field"><label>Mesai Saati</label>
+            <input type="number" id="oh" min="0.5" max="24" step="0.5" placeholder="4" oninput="window._calcOff()"/></div>
+        </div>
+        <div id="op" class="off-prev hidden"></div>
+        <div class="field"><label>Not (opsiyonel)</label>
+          <textarea id="on2" placeholder="Mesai nedeni, proje..." rows="3"></textarea></div>
+        <div class="alert a-info">ℹ️ Mesain onaylayıcın tarafından onaylandıktan sonra bakiyene yansıyacak.</div>
+        <button class="btn b-pri" id="osub" onclick="window._submitOT()">+ Mesai Kaydet</button>
+      </div>`;
+    }
+    window._calcOff=()=>{
+      const h=parseFloat(document.getElementById("oh")?.value);
+      const el=document.getElementById("op"); if(!el) return;
+      if(isNaN(h)||h<=0){el.classList.add("hidden");return;}
+      el.classList.remove("hidden");
+      el.innerHTML=`<div class="opl">Kazanılacak Off Saati</div><div class="opv">${(h*1.5).toFixed(1)} saat</div><div class="ops">${h} × 1.5 = ${(h*1.5).toFixed(1)} saat</div>`;
+    };
+    window._submitOT=async()=>{
+      const date=document.getElementById("od")?.value;
+      const hrs=parseFloat(document.getElementById("oh")?.value);
+      const note=document.getElementById("on2")?.value||"";
+      if(!date||isNaN(hrs)||hrs<=0){toast("Tarih ve geçerli saat zorunlu!","error");return;}
+      const btn=document.getElementById("osub");
+      btn.disabled=true; btn.textContent="Kaydediliyor...";
+      try{
+        await addDoc(collection(db,"overtime"),{
+          userId:currentUser.id, userName:currentUser.name,
+          date, overtimeHours:hrs, offHours:hrs*1.5,
+          note, status:"pending", createdAt:serverTimestamp()
+        });
+        toast("Mesai kaydı oluşturuldu.");
+        ["od","oh","on2"].forEach(id=>{const el=document.getElementById(id);if(el)el.value="";});
+        document.getElementById("op")?.classList.add("hidden");
+      }catch(e){toast("Hata: "+e.message,"error");}
+      btn.disabled=false; btn.textContent="+ Mesai Kaydet";
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: MY OVERTIME  (tarih aralığı + durum filtresi)
+    // ═══════════════════════════════════════════════════════
+    let myOtFilter = { dateFrom:"", dateTo:"", status:"all" };
+
+    function renderMyOT(){
+      const all = overtime.filter(o=>o.userId===currentUser.id);
+      const filtered = all.filter(o=>{
+        if(myOtFilter.status!=="all" && o.status!==myOtFilter.status) return false;
+        if(myOtFilter.dateFrom && o.date < myOtFilter.dateFrom) return false;
+        if(myOtFilter.dateTo   && o.date > myOtFilter.dateTo)   return false;
+        return true;
+      });
+      return `
+      <div class="ph"><h2>Mesailerim</h2><p>Tüm fazla mesai kayıtların</p></div>
+      <div class="card">
+        <!-- FİLTRELER -->
+        <div class="my-filters">
+          <div class="field" style="min-width:130px">
+            <label>Başlangıç Tarihi</label>
+            <input type="date" id="mf-from" value="${myOtFilter.dateFrom}" onchange="window._myOtFilter('from',this.value)"/>
+          </div>
+          <div class="field" style="min-width:130px">
+            <label>Bitiş Tarihi</label>
+            <input type="date" id="mf-to" value="${myOtFilter.dateTo}" onchange="window._myOtFilter('to',this.value)"/>
+          </div>
+          <div class="field" style="min-width:140px">
+            <label>Durum</label>
+            <select id="mf-status" onchange="window._myOtFilter('status',this.value)">
+              <option value="all"     ${myOtFilter.status==="all"?"selected":""}>Tüm Durumlar</option>
+              <option value="pending" ${myOtFilter.status==="pending"?"selected":""}>⏳ Bekliyor</option>
+              <option value="approved"${myOtFilter.status==="approved"?"selected":""}>✓ Onaylandı</option>
+              <option value="rejected"${myOtFilter.status==="rejected"?"selected":""}>✗ Reddedildi</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:8px;padding-bottom:1px">
+            <button class="btn b-sec b-sm" onclick="window._resetMyOtFilter()">Sıfırla</button>
+            <button class="btn b-sec b-sm" onclick="window._exportMine()">⬇ Excel'e İndir</button>
+          </div>
+        </div>
+        <div class="ct-muted" style="margin-bottom:12px;font-size:12px">
+          ${filtered.length} kayıt gösteriliyor${all.length!==filtered.length?" ("+all.length+" toplam)":""}
+        </div>
+        ${filtered.length===0?`<div class="empty"><div class="ei">📋</div><p>Filtreyle eşleşen kayıt yok</p></div>`:`
+        <div class="tw"><table>
+          <thead><tr><th>Tarih</th><th>Mesai</th><th>Off Hakkı</th><th>Durum</th><th>Not</th></tr></thead>
+          <tbody>${filtered.map(o=>`
+            <tr><td>${fmt(o.date)}</td><td><b>${o.overtimeHours}s</b></td>
+            <td class="ct-gold">${o.offHours}s</td>
+            <td>${stag(o)}${o.status==="rejected"&&o.rejectionReason?`<div class="rr">Sebep: ${o.rejectionReason}</div>`:""}</td>
+            <td class="ct-muted">${o.note||"-"}</td></tr>`).join("")}
+          </tbody>
+        </table></div>`}
+      </div>`;
+    }
+    window._myOtFilter=(key,val)=>{ myOtFilter[key==="from"?"dateFrom":key==="to"?"dateTo":"status"]=val; render(); };
+    window._resetMyOtFilter=()=>{ myOtFilter={dateFrom:"",dateTo:"",status:"all"}; render(); };
+    window._exportMine=()=>{
+      const all=overtime.filter(o=>o.userId===currentUser.id);
+      const filtered=all.filter(o=>{
+        if(myOtFilter.status!=="all"&&o.status!==myOtFilter.status) return false;
+        if(myOtFilter.dateFrom&&o.date<myOtFilter.dateFrom) return false;
+        if(myOtFilter.dateTo&&o.date>myOtFilter.dateTo) return false;
+        return true;
+      });
+      csv(filtered.map(o=>({
+        Tarih:fmt(o.date),"Mesai Saati":o.overtimeHours,"Off Hakkı":o.offHours,
+        Durum:o.status==="pending"?"Bekliyor":o.status==="approved"?"Onaylandı":"Reddedildi",Not:o.note||""
+      })),`mesailerim_${currentUser.name.replace(/ /g,"_")}`);
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: USE OFF
+    // ═══════════════════════════════════════════════════════
+    function renderUseOff(){
+      const bal=balance(currentUser.id);
+      const mine=offUsage.filter(o=>o.userId===currentUser.id);
+      return `
+      <div class="ph"><h2>Off Kullan</h2><p>Off hakkını kaydet</p></div>
+      <div class="two-col">
+        <div class="card fc">
+          <h3 class="ct">Off Kullanım Ekle</h3>
+          <div class="fr2">
+            <div class="field"><label>Tarih</label><input type="date" id="ffd"/></div>
+            <div class="field"><label>Kullanılan Saat</label>
+              <input type="number" id="ffh" min="0.5" step="0.5" placeholder="8" oninput="window._calcBal()"/></div>
+          </div>
+          <div id="fbp" class="off-prev hidden"></div>
+          <div class="field"><label>Not (opsiyonel)</label><input type="text" id="ffn" placeholder="Tatil, hastalık..."/></div>
+          <button class="btn b-pri" id="ffsub" onclick="window._submitOff()">Off Kullan</button>
+        </div>
+        <div>
+          <div class="st green" style="margin-bottom:16px">
+            <div class="sl">Mevcut Bakiye</div>
+            <div class="sv ${bal.balance<0?"red":"green"}">${bal.balance.toFixed(1)}s</div>
+            <div class="ss">Kazanılan: ${bal.earned.toFixed(1)}s — Kullanılan: ${bal.used.toFixed(1)}s</div>
+          </div>
+          <div class="card">
+            <div class="ch"><h3>Kullanım Geçmişi</h3>
+              <button class="btn b-sec b-sm" onclick="window._deleteOffModal()">Off Sil</button>
+            </div>
+            ${mine.length===0?`<div class="empty" style="padding:24px"><p>Henüz kullanım yok</p></div>`:`
+            <div class="tw"><table>
+              <thead><tr><th>Tarih</th><th>Saat</th><th>Not</th></tr></thead>
+              <tbody>${mine.map(o=>`
+                <tr><td>${fmt(o.date)}</td><td class="ct-teal">${o.hours}s</td><td class="ct-muted">${o.note||"-"}</td></tr>`).join("")}
+              </tbody>
+            </table></div>`}
+          </div>
+        </div>
+      </div>`;
+    }
+    window._calcBal=()=>{
+      const h=parseFloat(document.getElementById("ffh")?.value);
+      const el=document.getElementById("fbp"); if(!el) return;
+      const bal=balance(currentUser.id);
+      if(isNaN(h)||h<=0){el.classList.add("hidden");return;}
+      const after=bal.balance-h;
+      el.classList.remove("hidden");
+      el.className=`off-prev${after<0?" op-warn":""}`;
+      el.innerHTML=`<div class="opl">Kullanım Sonrası Bakiye</div>
+        <div class="opv ${after<0?"red":"green"}">${after.toFixed(1)} saat</div>
+        ${after<0?`<div class="ops" style="color:var(--red)">⚠️ Eksiye düşeceksin</div>`:""}`;
+    };
+    window._submitOff=async()=>{
+      const date=document.getElementById("ffd")?.value;
+      const hrs=parseFloat(document.getElementById("ffh")?.value);
+      const note=document.getElementById("ffn")?.value||"";
+      if(!date||isNaN(hrs)||hrs<=0){toast("Tarih ve geçerli saat zorunlu!","error");return;}
+      const btn=document.getElementById("ffsub");
+      btn.disabled=true; btn.textContent="Kaydediliyor...";
+      try{
+        await addDoc(collection(db,"offUsage"),{
+          userId:currentUser.id,userName:currentUser.name,date,hours:hrs,note,createdAt:serverTimestamp()
+        });
+        toast("Off kullanımı kaydedildi.");
+        ["ffd","ffh","ffn"].forEach(id=>{const el=document.getElementById(id);if(el)el.value="";});
+        document.getElementById("fbp")?.classList.add("hidden");
+      }catch(e){toast("Hata: "+e.message,"error");}
+      btn.disabled=false; btn.textContent="Off Kullan";
+    };
+
+    // Off silme (kendi kaydı - sadece user kendi off'unu silebilir)
+    window._deleteOffModal=()=>{
+      const mine=offUsage.filter(o=>o.userId===currentUser.id);
+      if(!mine.length){toast("Silinecek kayıt yok.","error");return;}
+      showModal("Off Kaydı Sil",`
+        <p class="ct-muted" style="margin-bottom:12px">Silmek istediğin kayıtı seç:</p>
+        <div style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto">
+          ${mine.map(o=>`
+            <div class="del-row" onclick="window._deleteOff('${o.id}')">
+              <div><div style="font-weight:600">${fmt(o.date)} — ${o.hours}s</div>
+                <div class="ct-muted">${o.note||"not yok"}</div></div>
+              <span class="del-x">🗑</span>
+            </div>`).join("")}
+        </div>`,"");
+    };
+    window._deleteOff=async id=>{
+      try{await deleteDoc(doc(db,"offUsage",id));toast("Off kaydı silindi.");closeModal();}
+      catch(e){toast("Hata: "+e.message,"error");}
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: APPROVE
+    // ═══════════════════════════════════════════════════════
+    function renderApprove(){
+      const sa=isSuperAdmin();
+      const managed=myManagedUsers();
+      const filtered=overtime
+        .filter(o=>o.status===tab && (sa||managed.some(u=>u.id===o.userId)))
+        .sort((a,b)=>(b.createdAt?.toMillis?.()??0)-(a.createdAt?.toMillis?.()??0));
+      const counts={
+        pending:  overtime.filter(o=>o.status==="pending" &&(sa||managed.some(u=>u.id===o.userId))).length,
+        approved: overtime.filter(o=>o.status==="approved"&&(sa||managed.some(u=>u.id===o.userId))).length,
+        rejected: overtime.filter(o=>o.status==="rejected"&&(sa||managed.some(u=>u.id===o.userId))).length,
+      };
+      return `
+      <div class="ph"><h2>Mesai Onayları</h2><p>${sa?"Tüm çalışanların mesai talepleri":"Sorumlu olduğun çalışanların talepleri"}</p></div>
+      <div class="tabs">
+        <button class="tab ${tab==="pending"?"active":""}" onclick="window._tab('pending')">Bekleyenler (${counts.pending})</button>
+        <button class="tab ${tab==="approved"?"active":""}" onclick="window._tab('approved')">Onaylananlar (${counts.approved})</button>
+        <button class="tab ${tab==="rejected"?"active":""}" onclick="window._tab('rejected')">Reddedilenler (${counts.rejected})</button>
+      </div>
+      <div class="card">
+        ${filtered.length===0?`<div class="empty"><div class="ei">🎉</div><p>Kayıt yok</p></div>`:`
+        <div class="tw"><table>
+          <thead><tr><th>Çalışan</th><th>Tarih</th><th>Mesai</th><th>Off Hakkı</th><th>Not</th>
+            ${tab==="pending"?"<th>İşlem</th>":""}
+            ${tab==="rejected"?"<th>Red Sebebi</th>":""}
+          </tr></thead>
+          <tbody>${filtered.map(o=>{
+            const u=allUsers.find(u=>u.id===o.userId);
+            const esc=(s)=>String(s).replace(/'/g,"\\'").replace(/"/g,"&quot;");
+            return `<tr>
+              <td><div class="fr"><div class="avatar av-${u?.color} av-sm">${ini(u?.name||o.userName)}</div>${u?.name||o.userName}</div></td>
+              <td>${fmt(o.date)}</td><td><b>${o.overtimeHours}s</b></td>
+              <td class="ct-gold">${o.offHours}s</td>
+              <td class="ct-muted">${o.note||"-"}</td>
+              ${tab==="pending"?`<td><div class="fr g8">
+                <button class="btn b-grn b-sm" onclick="window._approve('${o.id}')">✓ Onayla</button>
+                <button class="btn b-dng b-sm" onclick="window._openRej('${o.id}','${esc(u?.name||o.userName)}','${fmt(o.date)}',${o.overtimeHours})">✗ Reddet</button>
+              </div></td>`:""}
+              ${tab==="rejected"?`<td class="ct-red ct-muted">${o.rejectionReason||"-"}</td>`:""}
+            </tr>`;}).join("")}
+          </tbody>
+        </table></div>`}
+      </div>
+      <div class="modal-overlay hidden" id="rej-modal">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div class="mh"><h3>Mesai Reddet</h3><button class="mc" onclick="window._closeRej()">×</button></div>
+          <div id="rinfo" class="ct-muted" style="margin-bottom:16px"></div>
+          <div class="field"><label>Red Sebebi *</label><textarea id="rreason" rows="3" placeholder="Neden reddedildi?"></textarea></div>
+          <div class="ma"><button class="btn b-sec" onclick="window._closeRej()">İptal</button>
+            <button class="btn b-dng" onclick="window._confirmRej()">Reddet</button></div>
+        </div>
+      </div>`;
+    }
+    let rejId=null;
+    window._tab =t=>{tab=t;render();};
+    window._approve=async id=>{
+      try{await updateDoc(doc(db,"overtime",id),{status:"approved"});toast("Mesai onaylandı ✓");}
+      catch(e){toast("Hata: "+e.message,"error");}
+    };
+    window._openRej=(id,name,date,hrs)=>{
+      rejId=id;
+      document.getElementById("rinfo").innerHTML=`<strong style="color:var(--text)">${name}</strong> — ${date}, <strong>${hrs}s</strong>`;
+      document.getElementById("rreason").value="";
+      document.getElementById("rej-modal").classList.remove("hidden");
+    };
+    window._closeRej=()=>{document.getElementById("rej-modal")?.classList.add("hidden");rejId=null;};
+    window._confirmRej=async()=>{
+      const r=document.getElementById("rreason")?.value?.trim();
+      if(!r){toast("Red sebebi zorunlu!","error");return;}
+      try{
+        await updateDoc(doc(db,"overtime",rejId),{status:"rejected",rejectionReason:r});
+        toast("Mesai reddedildi.","error"); window._closeRej();
+      }catch(e){toast("Hata: "+e.message,"error");}
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: TEAM (APPROVER VIEW)
+    // ═══════════════════════════════════════════════════════
+    function renderTeam(){
+      const managed=myManagedUsers();
+      const sa=isSuperAdmin();
+      return `
+      <div class="ph"><h2>Ekip Bakiyeleri</h2><p>${sa?"Tüm çalışanlar":"Sorumlu olduğun çalışanlar"}</p></div>
+      <div class="ug">
+        ${managed.map(u=>{
+          const b=balance(u.id);
+          const pend=overtime.filter(o=>o.userId===u.id&&o.status==="pending").length;
+          const ap=allUsers.find(x=>x.email===u.approverEmail);
+          return `<div class="uc">
+            <div class="ucH">
+              <div class="avatar av-${u.color}">${ini(u.name)}</div>
+              <div><div class="ucN">${u.name}</div>
+                <div class="ct-muted" style="font-size:11px">${ap?.name||"—"}</div>
+                ${pend>0?`<span class="tag t-pend">⏳ ${pend} bekliyor</span>`:""}
+              </div>
+            </div>
+            <div class="ucs">
+              <div><div class="ucl">Kazanılan</div><div class="ucv ct-green">${b.earned.toFixed(1)}s</div></div>
+              <div><div class="ucl">Kullanılan</div><div class="ucv ct-gold">${b.used.toFixed(1)}s</div></div>
+              <div><div class="ucl">Bakiye</div><div class="ucv ${b.balance<0?"ct-red":""}">${b.balance.toFixed(1)}s</div></div>
+            </div>
+            <div class="fr g8">
+              <button class="btn b-sec b-sm" style="flex:1" onclick="window._openEdit('${u.id}','${u.name.replace(/'/g,"\\'")}',${balance(u.id).earned.toFixed(2)})">✎ Bakiye Düzenle</button>
+              <button class="btn b-sec b-sm" onclick="window._viewHistory('${u.id}','${u.name.replace(/'/g,"\\'")}')">📋 Geçmiş</button>
+            </div>
+          </div>`;}).join("")}
+      </div>
+      <!-- EDIT MODAL -->
+      <div class="modal-overlay hidden" id="edit-modal">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div class="mh"><h3>Bakiye Düzenle</h3><button class="mc" onclick="window._closeEdit()">×</button></div>
+          <div id="einfo" class="ct-muted" style="margin-bottom:16px"></div>
+          <div class="field"><label>Yeni Toplam Off Saati (Kazanılan)</label><input type="number" id="eval" step="0.5" min="0"/></div>
+          <div class="alert a-info" style="margin-top:12px">Fark "Admin Düzenlemesi" olarak kaydedilecek.</div>
+          <div class="ma"><button class="btn b-sec" onclick="window._closeEdit()">İptal</button>
+            <button class="btn b-pri" onclick="window._saveEdit()">Kaydet</button></div>
+        </div>
+      </div>
+      <!-- HISTORY MODAL -->
+      <div class="modal-overlay hidden" id="hist-modal">
+        <div class="modal" style="max-width:580px" onclick="event.stopPropagation()">
+          <div class="mh"><h3 id="hist-title">Geçmiş</h3><button class="mc" onclick="window._closeHist()">×</button></div>
+          <div id="hist-body"></div>
+        </div>
+      </div>`;
+    }
+
+    let editUid=null, editCurEarned=0;
+    window._openEdit=(id,name,earned)=>{
+      editUid=id; editCurEarned=earned;
+      document.getElementById("einfo").innerHTML=`<strong style="color:var(--text)">${name}</strong> — Mevcut: <strong style="color:var(--accent)">${earned}s</strong>`;
+      document.getElementById("eval").value=earned;
+      document.getElementById("edit-modal").classList.remove("hidden");
+    };
+    window._closeEdit=()=>{document.getElementById("edit-modal")?.classList.add("hidden");editUid=null;};
+    window._saveEdit=async()=>{
+      const nv=parseFloat(document.getElementById("eval")?.value);
+      if(isNaN(nv)||nv<0){toast("Geçerli değer gir!","error");return;}
+      const diff=nv-editCurEarned;
+      if(Math.abs(diff)<0.01){window._closeEdit();return;}
+      try{
+        await addDoc(collection(db,"overtime"),{
+          userId:editUid, userName:allUsers.find(u=>u.id===editUid)?.name||"",
+          date:new Date().toISOString().split("T")[0], overtimeHours:0, offHours:diff,
+          note:"Admin düzenlemesi", status:"approved", isAdminAdj:true, createdAt:serverTimestamp()
+        });
+        toast("Bakiye güncellendi."); window._closeEdit();
+      }catch(e){toast("Hata: "+e.message,"error");}
+    };
+
+    window._viewHistory=(uid,name)=>{
+      const ots=overtime.filter(o=>o.userId===uid);
+      const offs=offUsage.filter(o=>o.userId===uid);
+      document.getElementById("hist-title").textContent=name+" — Geçmiş";
+      document.getElementById("hist-body").innerHTML=`
+        <div class="tabs" style="margin-bottom:12px">
+          <button class="tab active" id="ht-ot" onclick="window._switchHist('ot','${uid}','${name.replace(/'/g,"\\'")}')">Mesailer (${ots.length})</button>
+          <button class="tab" id="ht-off" onclick="window._switchHist('off','${uid}','${name.replace(/'/g,"\\'")}')">Off Kullanım (${offs.length})</button>
+        </div>
+        <div id="hbody">${renderHistOT(uid)}</div>`;
+      document.getElementById("hist-modal").classList.remove("hidden");
+    };
+    window._switchHist=(t,uid,name)=>{
+      document.getElementById("ht-ot").className="tab"+(t==="ot"?" active":"");
+      document.getElementById("ht-off").className="tab"+(t==="off"?" active":"");
+      document.getElementById("hbody").innerHTML = t==="ot"?renderHistOT(uid):renderHistOff(uid);
+    };
+    const renderHistOT=uid=>{
+      const ots=overtime.filter(o=>o.userId===uid);
+      if(!ots.length) return `<div class="empty" style="padding:20px"><p>Kayıt yok</p></div>`;
+      return `<div class="tw" style="max-height:300px;overflow-y:auto"><table>
+        <thead><tr><th>Tarih</th><th>Mesai</th><th>Off</th><th>Durum</th><th>Not</th></tr></thead>
+        <tbody>${ots.map(o=>`
+          <tr><td>${fmt(o.date)}</td><td>${o.overtimeHours}s</td><td class="ct-gold">${o.offHours}s</td>
+          <td>${stag(o)}</td><td class="ct-muted">${o.note||"-"}</td></tr>`).join("")}
+        </tbody></table></div>`;
+    };
+    const renderHistOff=uid=>{
+      const offs=offUsage.filter(o=>o.userId===uid);
+      if(!offs.length) return `<div class="empty" style="padding:20px"><p>Kayıt yok</p></div>`;
+      return `<div class="tw" style="max-height:300px;overflow-y:auto"><table>
+        <thead><tr><th>Tarih</th><th>Saat</th><th>Not</th><th>Sil</th></tr></thead>
+        <tbody>${offs.map(o=>`
+          <tr><td>${fmt(o.date)}</td><td class="ct-teal">${o.hours}s</td>
+          <td class="ct-muted">${o.note||"-"}</td>
+          <td><button class="btn b-dng b-sm" onclick="window._delOffAdmin('${o.id}')">🗑</button></td></tr>`).join("")}
+        </tbody></table></div>`;
+    };
+    window._delOffAdmin=async id=>{
+      if(!confirm("Bu off kaydını silmek istediğine emin misin?")) return;
+      try{await deleteDoc(doc(db,"offUsage",id));toast("Off kaydı silindi.");}
+      catch(e){toast("Hata: "+e.message,"error");}
+    };
+    window._closeHist=()=>document.getElementById("hist-modal")?.classList.add("hidden");
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: ALL OVERTIME (APPROVER / SUPERADMIN)
+    // ═══════════════════════════════════════════════════════
+    function renderAllOT(){
+      const sa=isSuperAdmin();
+      const managed=myManagedUsers();
+      const filtered=overtime
+        .filter(o=>fuFilter==="all"||o.userId===fuFilter)
+        .filter(o=>fsFilter==="all"||o.status===fsFilter)
+        .filter(o=>sa||managed.some(u=>u.id===o.userId));
+      return `
+      <div class="ph"><h2>Tüm Mesailer</h2><p>${sa?"Ekibin tüm kayıtları":"Sorumlu olduğun çalışanların kayıtları"}</p></div>
+      <div class="card">
+        <div class="ch filters">
+          <div class="fr g8">
+            <select class="fsel" onchange="window._setFU(this.value)">
+              <option value="all" ${fuFilter==="all"?"selected":""}>Tüm çalışanlar</option>
+              ${managed.map(u=>`<option value="${u.id}" ${fuFilter===u.id?"selected":""}>${u.name}</option>`).join("")}
+            </select>
+            <select class="fsel" onchange="window._setFS(this.value)">
+              <option value="all" ${fsFilter==="all"?"selected":""}>Tüm durumlar</option>
+              <option value="pending"  ${fsFilter==="pending" ?"selected":""}>Bekliyor</option>
+              <option value="approved" ${fsFilter==="approved"?"selected":""}>Onaylandı</option>
+              <option value="rejected" ${fsFilter==="rejected"?"selected":""}>Reddedildi</option>
+            </select>
+          </div>
+          <button class="btn b-sec b-sm" onclick="window._exportAll()">⬇ Excel'e İndir</button>
+        </div>
+        ${filtered.length===0?`<div class="empty"><div class="ei">📋</div><p>Kayıt bulunamadı</p></div>`:`
+        <div class="tw"><table>
+          <thead><tr><th>Çalışan</th><th>Tarih</th><th>Mesai</th><th>Off</th><th>Durum</th><th>Not</th></tr></thead>
+          <tbody>${filtered.map(o=>{
+            const u=allUsers.find(u=>u.id===o.userId);
+            return `<tr>
+              <td><div class="fr"><div class="avatar av-${u?.color} av-sm">${ini(u?.name||o.userName)}</div>${u?.name||o.userName}</div></td>
+              <td>${fmt(o.date)}</td><td><b>${o.overtimeHours}s</b></td>
+              <td class="ct-gold">${o.offHours>0?o.offHours+"s":"—"}</td>
+              <td>${stag(o)}</td>
+              <td class="ct-muted">${o.isAdminAdj?`<span class="ct-teal">Admin düz.</span>`:(o.note||"-")}</td>
+            </tr>`;}).join("")}
+          </tbody>
+        </table></div>`}
+      </div>`;
+    }
+    window._setFU=v=>{fuFilter=v;render();};
+    window._setFS=v=>{fsFilter=v;render();};
+    window._exportAll=()=>{
+      const sa=isSuperAdmin();
+      const managed=myManagedUsers();
+      const rows=overtime
+        .filter(o=>fuFilter==="all"||o.userId===fuFilter)
+        .filter(o=>fsFilter==="all"||o.status===fsFilter)
+        .filter(o=>sa||managed.some(u=>u.id===o.userId));
+      csv(rows.map(o=>({
+        Çalışan:o.userName,Tarih:fmt(o.date),"Mesai Saati":o.overtimeHours,"Off Hakkı":o.offHours,
+        Durum:o.status==="pending"?"Bekliyor":o.status==="approved"?"Onaylandı":"Reddedildi",
+        "Red Sebebi":o.rejectionReason||"",Not:o.note||""
+      })),"mesailer");
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // PAGE: USER MANAGEMENT (SUPERADMIN ONLY)
+    // ═══════════════════════════════════════════════════════
+    function renderUsers(){
+      const approvers=allUsers.filter(u=>["approver","superadmin"].includes(u.role));
+      const users=allUsers.filter(u=>u.role==="user");
+      return `
+      <div class="ph"><h2>Kullanıcı Yönetimi</h2><p>Tüm kullanıcıları yönet</p></div>
+
+      <!-- ADD USER -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="ch"><h3>Yeni Kullanıcı Ekle</h3></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:12px;align-items:end">
+          <div class="field"><label>Ad Soyad</label><input type="text" id="un" placeholder="Ad Soyad"/></div>
+          <div class="field"><label>E-posta</label><input type="email" id="ue" placeholder="ad@bat.com"/></div>
+          <div class="field"><label>Rol</label>
+            <select id="ur">
+              <option value="user">Çalışan</option>
+              <option value="approver">Onaylayıcı</option>
+            </select>
+          </div>
+          <div class="field"><label>Onaylayıcı</label>
+            <select id="uap">
+              <option value="">— Seç —</option>
+              ${approvers.map(a=>`<option value="${a.email}">${a.name}</option>`).join("")}
+            </select>
+          </div>
+          <button class="btn b-pri" onclick="window._addUser()">+ Ekle</button>
+        </div>
+        <div class="alert a-info" style="margin-top:12px">Varsayılan şifre: <strong>password</strong> — Kullanıcı ilk girişte değiştirebilir.</div>
+      </div>
+
+      <!-- APPROVERS -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="ch"><h3>Onaylayıcılar</h3></div>
+        <div class="tw"><table>
+          <thead><tr><th>Ad</th><th>E-posta</th><th>Rol</th><th>Sorumlu Çalışan Sayısı</th><th>İşlem</th></tr></thead>
+          <tbody>${approvers.map(u=>{
+            const cnt=allUsers.filter(x=>x.approverEmail===u.email).length;
+            return `<tr>
+              <td><div class="fr"><div class="avatar av-${u.color} av-sm">${ini(u.name)}</div>${u.name}</div></td>
+              <td class="ct-muted">${u.email}</td>
+              <td>${u.role==="superadmin"?`<span class="tag t-appr">👑 Süper Admin</span>`:`<span class="tag t-pend">🔑 Onaylayıcı</span>`}</td>
+              <td>${cnt} çalışan</td>
+              <td>${u.email===SUPER_ADMIN_EMAIL?`<span class="ct-muted">—</span>`:`<button class="btn b-dng b-sm" onclick="window._delUser('${u.id}','${u.name.replace(/'/g,"\\'")}')">🗑 Sil</button>`}</td>
+            </tr>`;}).join("")}
+          </tbody>
+        </table></div>
+      </div>
+
+      <!-- USERS -->
+      <div class="card">
+        <div class="ch"><h3>Çalışanlar</h3><span class="ct-muted">${users.length} kişi</span></div>
+        <div class="tw"><table>
+          <thead><tr><th>Ad</th><th>E-posta</th><th>Onaylayıcı</th><th>Bakiye</th><th>İşlem</th></tr></thead>
+          <tbody>${users.map(u=>{
+            const b=balance(u.id);
+            const ap=allUsers.find(x=>x.email===u.approverEmail);
+            return `<tr>
+              <td><div class="fr"><div class="avatar av-${u.color} av-sm">${ini(u.name)}</div>${u.name}</div></td>
+              <td class="ct-muted">${u.email}</td>
+              <td>
+                <select class="fsel" style="width:auto;min-width:160px" onchange="window._changeAp('${u.id}',this.value)">
+                  <option value="">— Seç —</option>
+                  ${approvers.map(a=>`<option value="${a.email}" ${u.approverEmail===a.email?"selected":""}>${a.name}</option>`).join("")}
+                </select>
+              </td>
+              <td class="${b.balance<0?"ct-red":""}" style="font-weight:700">${b.balance.toFixed(1)}s</td>
+              <td><button class="btn b-dng b-sm" onclick="window._delUser('${u.id}','${u.name.replace(/'/g,"\\'")}')">🗑 Sil</button></td>
+            </tr>`;}).join("")}
+          </tbody>
+        </table></div>
+      </div>`;
+    }
+
+    window._addUser=async()=>{
+      const name=document.getElementById("un")?.value?.trim();
+      const email=document.getElementById("ue")?.value?.trim();
+      const role=document.getElementById("ur")?.value;
+      const apEmail=document.getElementById("uap")?.value||null;
+      if(!name||!email){toast("Ad ve e-posta zorunlu!","error");return;}
+      // Renk otomatik ata
+      const colors=["amber","teal","rose","gold","purple","sky","lime","orange"];
+      const color=colors[Math.floor(Math.random()*colors.length)];
+      try{
+        // Firebase Auth'a ekle (varsayılan şifre: 12345)
+        await createUserWithEmailAndPassword(auth, email, "password");
+        // Firestore'a ekle
+        await addDoc(collection(db,"users"),{name,email,role,color,approverEmail:apEmail});
+        toast(`${name} eklendi. Şifre: password`);
+        ["un","ue"].forEach(id=>{const el=document.getElementById(id);if(el)el.value="";});
+      }catch(e){
+        const m={"auth/email-already-in-use":"Bu e-posta zaten kayıtlı."};
+        toast(m[e.code]||"Hata: "+e.message,"error");
+      }
+    };
+
+    window._changeAp=async(uid,apEmail)=>{
+      try{
+        await updateDoc(doc(db,"users",uid),{approverEmail:apEmail||null});
+        toast("Onaylayıcı güncellendi.");
+      }catch(e){toast("Hata: "+e.message,"error");}
+    };
+
+    window._delUser=(id,name)=>{
+      showModal("Kullanıcı Sil",`
+        <p style="margin-bottom:8px">Şunun tüm verileri silinecek:</p>
+        <p><strong style="color:var(--red)">${name}</strong></p>
+        <p class="ct-muted" style="margin-top:8px;font-size:13px">Bu işlem geri alınamaz.</p>`,
+        `<button class="btn b-sec" onclick="closeModal()">İptal</button>
+         <button class="btn b-dng" onclick="window._confirmDelUser('${id}')">Sil</button>`
+      );
+    };
+    window._confirmDelUser=async id=>{
+      try{
+        // Kullanıcının overtime ve offUsage kayıtlarını sil
+        const otSnap=await getDocs(query(collection(db,"overtime")));
+        const ofSnap=await getDocs(query(collection(db,"offUsage")));
+        const batch=writeBatch(db);
+        otSnap.docs.filter(d=>d.data().userId===id).forEach(d=>batch.delete(d.ref));
+        ofSnap.docs.filter(d=>d.data().userId===id).forEach(d=>batch.delete(d.ref));
+        batch.delete(doc(db,"users",id));
+        await batch.commit();
+        toast("Kullanıcı ve tüm verileri silindi.","error");
+        closeModal();
+      }catch(e){toast("Hata: "+e.message,"error");}
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // GENERIC MODAL
+    // ═══════════════════════════════════════════════════════
+    function showModal(title,body,actions=""){
+      let m=document.getElementById("generic-modal");
+      if(!m){ m=document.createElement("div"); m.id="generic-modal"; m.className="modal-overlay"; document.body.appendChild(m); }
+      m.innerHTML=`
+        <div class="modal" onclick="event.stopPropagation()">
+          <div class="mh"><h3>${title}</h3><button class="mc" onclick="closeModal()">×</button></div>
+          <div>${body}</div>
+          ${actions?`<div class="ma">${actions}</div>`:""}
+        </div>`;
+      m.classList.remove("hidden");
+      m.onclick=e=>{if(e.target===m)closeModal();};
+    }
+    window.closeModal=()=>document.getElementById("generic-modal")?.classList.add("hidden");
+
+    // ═══════════════════════════════════════════════════════
+    // ATTACH LISTENERS
+    // ═══════════════════════════════════════════════════════
+    function attachListeners(){
+      document.querySelectorAll(".modal-overlay").forEach(el=>
+        el.addEventListener("click",e=>{if(e.target===el)el.classList.add("hidden");})
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // BOOT
+    // ═══════════════════════════════════════════════════════
+    function boot(){
+      document.getElementById("root").innerHTML=`
+        <div class="boot-screen">
+          <div class="brand-boot"><span class="bo">over</span><span class="bt">time</span></div>
+          <div class="loading-dots"><span></span><span></span><span></span></div>
+        </div>`;
+      // onAuthStateChanged otomatik tetiklenecek
+    }
+    boot();
+  </script>
+
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#0c0e12;--s1:#13151c;--s2:#1a1d27;--bd:#252836;
+      --acc:#f0a500;--grn:#4ade80;--tel:#2dd4bf;--red:#f87171;
+      --txt:#f0f2ff;--mut:#5e6480;--r:12px;
+    }
+    body{background:var(--bg);color:var(--txt);font-family:'DM Sans',sans-serif;min-height:100vh}
+    h1,h2,h3,h4{font-family:'Syne',sans-serif}
+    #root{min-height:100vh}
+
+    /* BOOT */
+    .boot-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:24px}
+    .brand-boot{font-family:'Syne',sans-serif;font-size:42px;font-weight:900;letter-spacing:-2px}
+
+    /* BRAND */
+    .bo{color:var(--txt)}
+    .bt{color:var(--acc)}
+    .blogo{font-family:'Syne',sans-serif;font-size:32px;font-weight:900;letter-spacing:-1.5px}
+    .blogo.sm{font-size:22px}
+    .bsub{color:var(--mut);font-size:12px;margin-top:8px;text-transform:uppercase;letter-spacing:1.5px}
+    .bsub-sm{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:1px;margin-top:3px}
+
+    /* LOGIN */
+    .login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;
+      background:radial-gradient(ellipse at 25% 25%,rgba(240,165,0,.08) 0%,transparent 55%),
+                 radial-gradient(ellipse at 75% 75%,rgba(45,212,191,.05) 0%,transparent 55%),var(--bg)}
+    .login-card{background:var(--s1);border:1px solid var(--bd);border-radius:20px;padding:44px 40px;width:100%;max-width:420px}
+    .login-brand{text-align:center;margin-bottom:36px}
+    .lfields{display:flex;flex-direction:column;gap:18px}
+    .eye-btn{position:absolute;right:10px;bottom:9px;background:none;border:none;cursor:pointer;font-size:16px;line-height:1;padding:2px}
+    .lhint{text-align:center;font-size:12px;color:var(--mut);margin-top:20px}
+    .b-full{width:100%;justify-content:center;padding:13px;font-size:15px}
+
+    /* APP */
+    .app{display:flex;min-height:100vh}
+    .sidebar{width:252px;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+    .sid-brand{padding:24px 20px 16px;border-bottom:1px solid var(--bd)}
+    .nav{padding:12px;flex:1}
+    .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--mut);transition:all .12s;margin-bottom:2px}
+    .nav-item:hover{background:var(--s2);color:var(--txt)}
+    .nav-item.active{background:var(--acc);color:#0c0e12;font-weight:600}
+    .ni{width:16px;text-align:center;flex-shrink:0}
+    .badge{background:#f87171;color:white;font-size:10px;padding:1px 7px;border-radius:20px;margin-left:auto;font-weight:700}
+    .sid-bal{margin:0 12px 12px;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:14px}
+    .bl{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--mut);margin-bottom:6px}
+    .bv{font-family:'Syne',sans-serif;font-size:28px;font-weight:800}
+    .bv.pos{color:var(--grn)}.bv.neg{color:var(--red)}
+    .bs{font-size:11px;color:var(--mut);margin-top:4px}
+    .sid-user{padding:14px;border-top:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+    .su-n{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .su-r{font-size:11px;color:var(--mut)}
+    .logout-btn{flex-shrink:0;background:none;border:1px solid var(--bd);color:var(--mut);padding:5px 8px;border-radius:7px;cursor:pointer;font-size:14px;transition:all .12s}
+    .logout-btn:hover{border-color:var(--red);color:var(--red)}
+    .main{flex:1;padding:28px;overflow-y:auto;max-width:calc(100vw - 252px)}
+
+    /* AVATAR */
+    .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:15px;color:#0c0e12;flex-shrink:0}
+    .av-sm{width:30px;height:30px;font-size:11px}
+    .av-amber{background:#fbbf24}.av-teal{background:#2dd4bf}.av-rose{background:#fb7185}
+    .av-gold{background:#f0a500}.av-purple{background:#a78bfa}.av-sky{background:#38bdf8}
+    .av-lime{background:#a3e635}.av-orange{background:#fb923c}.av-undefined,.av-{background:#7c3aed}
+
+    /* PAGE HEADER */
+    .ph{margin-bottom:26px}
+    .ph h2{font-size:26px;font-weight:800;letter-spacing:-.5px}
+    .ph p{color:var(--mut);font-size:14px;margin-top:4px}
+
+    /* STATS */
+    .sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:14px;margin-bottom:22px}
+    .st{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:18px;position:relative;overflow:hidden}
+    .st::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+    .st.gold::before{background:var(--acc)}.st.green::before,.st.green2::before{background:var(--grn)}
+    .st.teal::before{background:var(--tel)}.st.red::before{background:var(--red)}
+    .sl{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--mut);margin-bottom:8px}
+    .sv{font-family:'Syne',sans-serif;font-size:30px;font-weight:800;line-height:1}
+    .sv.gold{color:var(--acc)}.sv.green{color:var(--grn)}.sv.teal{color:var(--tel)}.sv.red{color:var(--red)}
+    .ss{font-size:11px;color:var(--mut);margin-top:6px}
+
+    /* CARD */
+    .card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:22px;margin-bottom:16px}
+    .ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .ch h3,.ct{font-family:'Syne',sans-serif;font-size:15px;font-weight:800;margin-bottom:16px}
+    .fc{max-width:560px;display:flex;flex-direction:column;gap:16px}
+
+    /* FORM */
+    .field{display:flex;flex-direction:column;gap:6px}
+    .field label{font-size:12px;color:var(--mut);font-weight:500}
+    .field input,.field select,.field textarea,.fsel{
+      background:var(--s2);border:1px solid var(--bd);color:var(--txt);
+      padding:10px 14px;border-radius:8px;font-size:14px;font-family:'DM Sans',sans-serif;
+      outline:none;transition:border-color .12s;width:100%}
+    .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--acc)}
+    .field textarea{resize:vertical}
+    .fr2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .fsel{width:auto;padding:8px 12px;font-size:13px}
+
+    /* OFF PREVIEW */
+    .off-prev{background:rgba(240,165,0,.07);border:1px solid rgba(240,165,0,.2);border-radius:10px;padding:16px}
+    .op-warn{background:rgba(248,113,113,.07);border-color:rgba(248,113,113,.2)}
+    .off-prev.hidden{display:none}
+    .opl{font-size:11px;color:var(--mut);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .opv{font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:var(--acc)}
+    .opv.red{color:var(--red)}.opv.green{color:var(--grn)}
+    .ops{font-size:12px;color:var(--mut);margin-top:4px}
+
+    /* BUTTONS */
+    .btn{padding:10px 20px;border-radius:8px;border:none;cursor:pointer;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;transition:all .12s;display:inline-flex;align-items:center;gap:6px}
+    .b-pri{background:var(--acc);color:#0c0e12}
+    .b-pri:hover{filter:brightness(1.1);transform:translateY(-1px)}
+    .b-pri:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    .b-sec{background:var(--s2);color:var(--txt);border:1px solid var(--bd)}
+    .b-sec:hover{border-color:var(--acc);color:var(--acc)}
+    .b-dng{background:transparent;color:var(--red);border:1px solid var(--red)}
+    .b-dng:hover{background:var(--red);color:white}
+    .b-grn{background:var(--grn);color:#0c0e12}
+    .b-grn:hover{filter:brightness(1.1)}
+    .b-sm{padding:6px 12px;font-size:12px}
+
+    /* TABLE */
+    .tw{overflow-x:auto}
+    table{width:100%;border-collapse:collapse}
+    th{text-align:left;padding:10px 14px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--mut);border-bottom:1px solid var(--bd);font-family:'Syne',sans-serif}
+    td{padding:12px 14px;border-bottom:1px solid rgba(37,40,54,.7);font-size:13px;vertical-align:middle}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:rgba(255,255,255,.015)}
+
+    /* TAGS */
+    .tag{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+    .t-pend{background:rgba(240,165,0,.12);color:var(--acc);border:1px solid rgba(240,165,0,.25)}
+    .t-appr{background:rgba(74,222,128,.10);color:var(--grn);border:1px solid rgba(74,222,128,.25)}
+    .t-rej{background:rgba(248,113,113,.10);color:var(--red);border:1px solid rgba(248,113,113,.25)}
+    .rr{background:var(--s2);border-left:3px solid var(--red);padding:6px 10px;border-radius:4px;font-size:11px;color:var(--mut);margin-top:6px}
+
+    /* ALERT */
+    .alert{padding:12px 16px;border-radius:8px;font-size:13px}
+    .a-info{background:rgba(45,212,191,.08);border:1px solid rgba(45,212,191,.25);color:var(--tel)}
+    .a-err{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.25);color:var(--red)}
+    .alert.hidden{display:none}
+
+    /* TABS */
+    .tabs{display:flex;gap:4px;background:var(--s2);padding:4px;border-radius:10px;margin-bottom:18px;width:fit-content}
+    .tab{padding:8px 18px;border-radius:7px;border:none;background:none;color:var(--mut);font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .12s}
+    .tab.active{background:var(--acc);color:#0c0e12}
+    .tab:hover:not(.active){color:var(--txt)}
+
+    /* MODAL */
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)}
+    .modal-overlay.hidden{display:none}
+    .modal{background:var(--s1);border:1px solid var(--bd);border-radius:16px;padding:28px;width:100%;max-width:480px;animation:slideUp .2s ease}
+    @keyframes slideUp{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}
+    .mh{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+    .mh h3{font-size:18px;font-weight:800}
+    .mc{background:none;border:none;color:var(--mut);font-size:22px;cursor:pointer;line-height:1;padding:0 4px}
+    .mc:hover{color:var(--txt)}
+    .ma{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+
+    /* TEAM CARDS */
+    .ug{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+    .uc{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:18px;display:flex;flex-direction:column;gap:14px}
+    .ucH{display:flex;align-items:center;gap:12px}
+    .ucN{font-weight:600;font-size:15px}
+    .ucs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;background:var(--s2);border-radius:8px;padding:12px}
+    .ucl{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+    .ucv{font-family:'Syne',sans-serif;font-size:18px;font-weight:800}
+
+    /* DELETE ROW */
+    .del-row{display:flex;align-items:center;justify-content:space-between;background:var(--s2);border:1px solid var(--bd);border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .12s}
+    .del-row:hover{border-color:var(--red);background:rgba(248,113,113,.06)}
+    .del-x{font-size:18px;color:var(--mut)}
+    .del-row:hover .del-x{color:var(--red)}
+
+    /* LAYOUT */
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+    .fr{display:flex;align-items:center;gap:8px}
+    .g8{gap:8px}
+    .filters{flex-wrap:wrap;gap:8px}
+
+    /* COLOR TEXT */
+    .ct-gold{color:var(--acc);font-weight:600}
+    .ct-green{color:var(--grn);font-weight:600}
+    .ct-teal{color:var(--tel);font-weight:600}
+    .ct-red{color:var(--red)}
+    .ct-muted{color:var(--mut);font-size:12px}
+
+    /* EMPTY */
+    .empty{text-align:center;padding:44px 24px;color:var(--mut)}
+    .ei{font-size:44px;margin-bottom:10px;opacity:.4}
+    .empty p{font-size:14px}
+
+    /* TOAST */
+    .toast{position:fixed;bottom:24px;right:24px;z-index:9999;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:500;opacity:0;pointer-events:none;transition:opacity .25s;max-width:340px}
+    .toast.show{opacity:1;pointer-events:auto}
+    .t-success{background:#166534;color:#bbf7d0;border:1px solid #22c55e}
+    .t-error{background:#7f1d1d;color:#fecaca;border:1px solid #ef4444}
+    .t-info{background:#1e3a5f;color:#bae6fd;border:1px solid #38bdf8}
+
+    /* LINK BTN */
+    .link-btn{background:none;border:none;color:var(--tel);font-size:13px;cursor:pointer;text-decoration:underline;padding:0;font-family:'DM Sans',sans-serif}
+    .link-btn:hover{color:var(--grn)}
+
+    /* MY OT FILTERS */
+    .my-filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:16px;padding:16px;background:var(--s2);border-radius:10px;border:1px solid var(--bd)}
+
+    /* LOADING */
+    .loading-dots{display:flex;gap:8px;justify-content:center;padding:20px}
+    .loading-dots span{width:8px;height:8px;border-radius:50%;background:var(--acc);animation:pulse 1.2s ease-in-out infinite}
+    .loading-dots span:nth-child(2){animation-delay:.2s}
+    .loading-dots span:nth-child(3){animation-delay:.4s}
+    @keyframes pulse{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}
+
+    /* RESPONSIVE */
+    @media(max-width:768px){
+      .app{flex-direction:column}
+      .sidebar{width:100%;height:auto;position:relative}
+      .main{padding:16px;max-width:100%}
+      .two-col,.fr2{grid-template-columns:1fr}
+      .sg{grid-template-columns:1fr 1fr}
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <div id="toast" class="toast"></div>
+</body>
+</html>
