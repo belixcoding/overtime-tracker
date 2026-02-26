@@ -147,27 +147,36 @@
       const batch = writeBatch(db);
       let changed = false;
 
-      // 1) Eski email → yeni email migration
+      // 1) Eski email → yeni email migration: eski dokümanı SİL, yeni email yoksa ekle
+      const migratedOldEmails = new Set();
       for (const d of snap.docs) {
         const oldEmail = d.data().email;
         if (EMAIL_MIGRATIONS[oldEmail]) {
-          const newEmail = EMAIL_MIGRATIONS[oldEmail];
-          const def = USER_DEFINITIONS.find(u=>u.email===newEmail);
-          if (def) {
-            batch.update(d.ref, { email: newEmail, name: def.name, role: def.role });
-            changed = true;
-            console.log("Migrated:", oldEmail, "→", newEmail);
-          }
+          // Eski dokümanı sil
+          batch.delete(d.ref);
+          migratedOldEmails.add(oldEmail);
+          changed = true;
+          console.log("Deleted old doc:", oldEmail);
         }
       }
 
-      // 2) Eksik kullanıcıları ekle — silinmişleri atlat
-      const existingEmails = snap.docs.map(d =>
-        EMAIL_MIGRATIONS[d.data().email] || d.data().email
+      // 2) Migration sonrası güncel snapshot'u yeniden oku (batch henüz commit edilmedi)
+      //    Mevcut emailleri hesapla (silinecekler hariç, yeni eklenecekler dahil)
+      const existingEmails = new Set(
+        snap.docs
+          .filter(d => !migratedOldEmails.has(d.data().email))
+          .map(d => d.data().email)
       );
+      // Migration'daki yeni emailleri de mevcut say
+      for (const [oldE, newE] of Object.entries(EMAIL_MIGRATIONS)) {
+        existingEmails.add(newE);
+      }
+
+      // 3) Eksik kullanıcıları ekle — silinmişleri, blacklist'tekileri ve mevcutları atla
       for (const u of USER_DEFINITIONS) {
-        if (!existingEmails.includes(u.email) && !deletedEmails.has(u.email) && !SEED_BLACKLIST.includes(u.email)) {
+        if (!existingEmails.has(u.email) && !deletedEmails.has(u.email) && !SEED_BLACKLIST.includes(u.email)) {
           batch.set(doc(collection(db,"users")), u);
+          existingEmails.add(u.email); // tekrar eklemeyi önle
           changed = true;
           console.log("Seeded:", u.email);
         }
@@ -986,8 +995,11 @@
     // PAGE: USER MANAGEMENT (SUPERADMIN ONLY)
     // ═══════════════════════════════════════════════════════
     function renderUsers(){
-      const approvers=allUsers.filter(u=>["approver","superadmin"].includes(u.role));
-      const users=allUsers.filter(u=>u.role==="user");
+      // Email bazında deduplicate — Firestore'da eski/yeni duplicate varsa sadece birini göster
+      const seenEmails = new Set();
+      const uniqueUsers = allUsers.filter(u=>{ if(seenEmails.has(u.email)) return false; seenEmails.add(u.email); return true; });
+      const approvers=uniqueUsers.filter(u=>["approver","superadmin"].includes(u.role));
+      const users=uniqueUsers.filter(u=>u.role==="user");
       return `
       <div class="ph"><h2>Kullanıcı Yönetimi</h2><p>Tüm kullanıcıları yönet</p></div>
 
