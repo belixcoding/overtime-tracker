@@ -42,22 +42,26 @@
       { email:"aliberkayozkan96@gmail.com",          name:"Superadmin",             role:"superadmin", color:"gold",   approverEmail:null },
       // ── APPROVERS ────────────────────────────────────────
       { email:"tamer_kabakcioglu@bat.com",          name:"Tamer Kabakçıoğlu",      role:"approver",   color:"sky",    approverEmail:null },
-      { email:"ali_berkay_ozkan@bat.com",           name:"Ali Berkay Özkan",       role:"approver",   color:"purple", approverEmail:null },
       { email:"edanur_karapicak_ates@bat.com",      name:"Edanur Karapıçak Ateş",  role:"approver",   color:"rose",   approverEmail:null },
-      // ── USERS under tamer_kabakcioglu ────────────────────
+      { email:"serhat_serdar",                      name:"Serhat Serdar",      role:"approver",   color:"sky",    approverEmail:null },
+      { email:"cagdas_comak",                       name:"Çağdaş Çomak",      role:"approver",   color:"sky",    approverEmail:null }
+      // ── USERS under tamer ────────────────────
       { email:"mustafa_sayim_external@bat.com",     name:"Mustafa Sayım",          role:"user",       color:"amber",  approverEmail:"tamer_kabakcioglu@bat.com" },
       { email:"muslum_pehlivan@bat.com",            name:"Müslüm Pehlivan",        role:"user",       color:"teal",   approverEmail:"tamer_kabakcioglu@bat.com" },
-      // ── USERS under ali_berkay_ozkan ─────────────────────
-      { email:"yasin_koknal_external@bat.com",      name:"Yasin Köknallar",        role:"user",       color:"lime",   approverEmail:"ali_berkay_ozkan@bat.com" },
-      { email:"emrah_menek_external@bat.com",       name:"Emrah Menek",            role:"user",       color:"orange", approverEmail:"ali_berkay_ozkan@bat.com" },
-      { email:"sude_albayrak_external@bat.com",     name:"Sude Albayrak",          role:"user",       color:"amber",  approverEmail:"ali_berkay_ozkan@bat.com" },
+      // ── USERS under serhat ─────────────────────
+      { email:"yasin_koknal_external@bat.com",      name:"Yasin Köknal",        role:"user",       color:"lime",   approverEmail:"serhat_serdar@bat.com" },
+      { email:"emrah_menek_external@bat.com",       name:"Emrah Menek",            role:"user",       color:"orange", approverEmail:"serhat_serdar@bat.com" },
+      { email:"sude_albayrak_external@bat.com",     name:"Sude Albayrak",          role:"user",       color:"amber",  approverEmail:"serhat_serdar@bat.com" },
       // ── USERS under edanur ───────────────────────────────
       { email:"elif_caliskan_external@bat.com",     name:"Elif Çalışkan",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
       { email:"deniz_soydas_external@bat.com",      name:"Deniz Soybaş",           role:"user",       color:"teal",   approverEmail:"edanur_karapicak_ates@bat.com" },
+      // ── USERS under cagdas ─────────────────────
+      { email:"mehmet_ozmen_external@bat.com",     name:"Mehmet Özmen",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
+      { email:"berk_turut_external@bat.com",     name:"Berk Türüt",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
+      { email:"yucel_toplar_external@bat.com",     name:"Yücel Toplar",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" }
     ];
     // superadmin kendi kendinin de onaylayıcısı (onaylayıcı listesinde kendisini görür)
     // ali_berkay_ozkan_external kendi kendinin de approver'ı
-    USER_DEFINITIONS.find(u=>u.email==="aliberkayozkan96@gmail.com").approverEmail = "ali_berkay_ozkan@bat.com";
 
     const SUPER_ADMIN_EMAIL = "aliberkayozkan96@gmail.com";
 
@@ -131,6 +135,8 @@
     const EMAIL_MIGRATIONS = {
       "ali_berkay_ozkan_external@bat.com": "aliberkayozkan96@gmail.com"
     };
+    // Seed'den kalıcı olarak çıkarılacak emailler
+    const SEED_BLACKLIST = ["ali_berkay_ozkan@bat.com"];
 
     async function seedUsers() {
       const [snap, deletedSnap] = await Promise.all([
@@ -160,7 +166,7 @@
         EMAIL_MIGRATIONS[d.data().email] || d.data().email
       );
       for (const u of USER_DEFINITIONS) {
-        if (!existingEmails.includes(u.email) && !deletedEmails.has(u.email)) {
+        if (!existingEmails.includes(u.email) && !deletedEmails.has(u.email) && !SEED_BLACKLIST.includes(u.email)) {
           batch.set(doc(collection(db,"users")), u);
           changed = true;
           console.log("Seeded:", u.email);
