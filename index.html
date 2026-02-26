@@ -32,37 +32,7 @@
     const db   = getFirestore(fb);
     const auth = getAuth(fb);
 
-    // ═══════════════════════════════════════════════════════
-    // USER DEFINITIONS
-    // Roller: "superadmin" | "approver" | "user"
-    // approverEmail: kimin onaylayıcısı olduğu
-    // ═══════════════════════════════════════════════════════
-    const USER_DEFINITIONS = [
-      // ── SUPER ADMIN ──────────────────────────────────────
-      { email:"aliberkayozkan96@gmail.com",          name:"Superadmin",             role:"superadmin", color:"gold",   approverEmail:null },
-      // ── APPROVERS ────────────────────────────────────────
-      { email:"tamer_kabakcioglu@bat.com",          name:"Tamer Kabakçıoğlu",      role:"approver",   color:"sky",    approverEmail:null },
-      { email:"edanur_karapicak_ates@bat.com",      name:"Edanur Karapıçak Ateş",  role:"approver",   color:"rose",   approverEmail:null },
-      { email:"serhat_serdar@bat.com",              name:"Serhat Serdar",          role:"approver",   color:"sky",    approverEmail:null },
-      { email:"cagdas_comak@bat.com",               name:"Çağdaş Çomak",           role:"approver",   color:"sky",    approverEmail:null },
-      // ── USERS under tamer ────────────────────
-      { email:"mustafa_sayim_external@bat.com",     name:"Mustafa Sayım",          role:"user",       color:"amber",  approverEmail:"tamer_kabakcioglu@bat.com" },
-      { email:"muslum_pehlivan@bat.com",            name:"Müslüm Pehlivan",        role:"user",       color:"teal",   approverEmail:"tamer_kabakcioglu@bat.com" },
-      // ── USERS under serhat ─────────────────────
-      { email:"yasin_koknal_external@bat.com",      name:"Yasin Köknal",           role:"user",       color:"lime",   approverEmail:"serhat_serdar@bat.com" },
-      { email:"emrah_menek_external@bat.com",       name:"Emrah Menek",            role:"user",       color:"orange", approverEmail:"serhat_serdar@bat.com" },
-      { email:"sude_albayrak_external@bat.com",     name:"Sude Albayrak",          role:"user",       color:"amber",  approverEmail:"serhat_serdar@bat.com" },
-      // ── USERS under edanur ───────────────────────────────
-      { email:"elif_caliskan_external@bat.com",     name:"Elif Çalışkan",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
-      { email:"deniz_soydas_external@bat.com",      name:"Deniz Soybaş",           role:"user",       color:"teal",   approverEmail:"edanur_karapicak_ates@bat.com" },
-      // ── USERS under cagdas ─────────────────────
-      { email:"mehmet_ozmen_external@bat.com",     name:"Mehmet Özmen",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
-      { email:"berk_turut_external@bat.com",     name:"Berk Türüt",              role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" },
-      { email:"yucel_toplar_external@bat.com",     name:"Yücel Toplar",          role:"user",       color:"rose",   approverEmail:"edanur_karapicak_ates@bat.com" }
-    ];
-    // superadmin kendi kendinin de onaylayıcısı (onaylayıcı listesinde kendisini görür)
-    // ali_berkay_ozkan_external kendi kendinin de approver'ı
-
+    // Tek sabit: superadmin email'i (rol kontrolü için)
     const SUPER_ADMIN_EMAIL = "aliberkayozkan96@gmail.com";
 
     // ═══════════════════════════════════════════════════════
@@ -129,63 +99,6 @@
     };
 
     // ═══════════════════════════════════════════════════════
-    // SEED — İlk açılışta kullanıcıları Firestore'a yaz
-    // ═══════════════════════════════════════════════════════
-    // Bilinen eski → yeni email değişimleri (otomatik migrate)
-    const EMAIL_MIGRATIONS = {
-      "ali_berkay_ozkan_external@bat.com": "aliberkayozkan96@gmail.com"
-    };
-    // Seed'den kalıcı olarak çıkarılacak emailler
-    const SEED_BLACKLIST = ["ali_berkay_ozkan@bat.com"];
-
-    async function seedUsers() {
-      const [snap, deletedSnap] = await Promise.all([
-        getDocs(collection(db,"users")),
-        getDocs(collection(db,"deletedUsers"))
-      ]);
-      const deletedEmails = new Set(deletedSnap.docs.map(d=>d.data().email));
-      const batch = writeBatch(db);
-      let changed = false;
-
-      // 1) Eski email → yeni email migration: eski dokümanı SİL, yeni email yoksa ekle
-      const migratedOldEmails = new Set();
-      for (const d of snap.docs) {
-        const oldEmail = d.data().email;
-        if (EMAIL_MIGRATIONS[oldEmail]) {
-          // Eski dokümanı sil
-          batch.delete(d.ref);
-          migratedOldEmails.add(oldEmail);
-          changed = true;
-          console.log("Deleted old doc:", oldEmail);
-        }
-      }
-
-      // 2) Migration sonrası güncel snapshot'u yeniden oku (batch henüz commit edilmedi)
-      //    Mevcut emailleri hesapla (silinecekler hariç, yeni eklenecekler dahil)
-      const existingEmails = new Set(
-        snap.docs
-          .filter(d => !migratedOldEmails.has(d.data().email))
-          .map(d => d.data().email)
-      );
-      // Migration'daki yeni emailleri de mevcut say
-      for (const [oldE, newE] of Object.entries(EMAIL_MIGRATIONS)) {
-        existingEmails.add(newE);
-      }
-
-      // 3) Eksik kullanıcıları ekle — silinmişleri, blacklist'tekileri ve mevcutları atla
-      for (const u of USER_DEFINITIONS) {
-        if (!existingEmails.has(u.email) && !deletedEmails.has(u.email) && !SEED_BLACKLIST.includes(u.email)) {
-          batch.set(doc(collection(db,"users")), u);
-          existingEmails.add(u.email); // tekrar eklemeyi önle
-          changed = true;
-          console.log("Seeded:", u.email);
-        }
-      }
-
-      if (changed) await batch.commit();
-    }
-
-    // ═══════════════════════════════════════════════════════
     // FIRESTORE LISTENERS
     // ═══════════════════════════════════════════════════════
     function subscribeAll() {
@@ -213,29 +126,15 @@
     onAuthStateChanged(auth, async fbUser=>{
       if(fbUser){
         authUser = fbUser;
-        // 1) Önce seed çalıştır (eksik kullanıcıları Firestore'a yaz)
-        try { await seedUsers(); } catch(e){ console.warn("Seed error:", e); }
-        // 2) Kullanıcıyı Firestore'dan çek
+        // Kullanıcıyı Firestore'dan çek
         const snap = await getDocs(collection(db,"users"));
         allUsers = snap.docs.map(d=>({id:d.id,...d.data()}));
         currentUser = allUsers.find(u=>u.email===fbUser.email)||null;
-        console.log("Auth email:", fbUser.email);
-        console.log("Found user:", currentUser);
-        console.log("All users in Firestore:", allUsers.map(u=>u.email));
+
+
         if(!currentUser){
-          // Kullanıcı definitions'da var mı kontrol et, varsa ekle
-          const def = USER_DEFINITIONS.find(u=>u.email===fbUser.email);
-          if(def){
-            console.log("User in definitions but not Firestore, adding...");
-            await addDoc(collection(db,"users"), def);
-            const snap2 = await getDocs(collection(db,"users"));
-            allUsers = snap2.docs.map(d=>({id:d.id,...d.data()}));
-            currentUser = allUsers.find(u=>u.email===fbUser.email)||null;
-          }
-          if(!currentUser){
-            toast("Kullanıcı Firestore'da bulunamadı. Konsolu kontrol et.","error");
-            await signOut(auth); return;
-          }
+          toast("Kullanıcı sisteme tanımlı değil. Süper admin ile iletişime geç.","error");
+          await signOut(auth); return;
         }
         subscribeAll();
         // subscribeAll'ın onSnapshot'ları async gelir — hemen render et
@@ -1092,10 +991,7 @@
         await signOut2(auth2); // secondary'yi hemen çıkart
         // Firestore'a ekle
         await addDoc(collection(db,"users"),{name,email,role,color,approverEmail:apEmail});
-        // deletedUsers'dan varsa temizle (tekrar eklendi)
-        const delSnap=await getDocs(collection(db,"deletedUsers"));
-        const delDoc=delSnap.docs.find(d=>d.data().email===email);
-        if(delDoc) await deleteDoc(delDoc.ref);
+
         toast(`${name} eklendi ✓ Şifre: password`);
         ["un","ue"].forEach(id=>{const el=document.getElementById(id);if(el)el.value="";});
         document.getElementById("ur").value="user";
@@ -1139,13 +1035,7 @@
         otSnap.docs.filter(d=>d.data().userId===id).forEach(d=>batch.delete(d.ref));
         ofSnap.docs.filter(d=>d.data().userId===id).forEach(d=>batch.delete(d.ref));
         batch.delete(doc(db,"users",id));
-        // Silinen email'i "deletedUsers" koleksiyonuna kaydet — seed tekrar eklemesin
-        if(userToDelete?.email){
-          batch.set(doc(collection(db,"deletedUsers")), {
-            email: userToDelete.email,
-            deletedAt: serverTimestamp()
-          });
-        }
+
         await batch.commit();
         toast("Kullanıcı ve tüm verileri silindi.","error");
         closeModal();
